@@ -17,8 +17,8 @@ const CFG = {
   YAW_THRESHOLD: 20,
   AWAY_ALERT_S: 3.0,            // head away longer than this -> warning
   FACE_LOST_ALERT_S: 2.0,       // face missing -> "EYES OFF ROAD" alert
-  PHONE_CONFIDENCE: 0.4,
-  PHONE_CHECK_MS: 1500,         // how often the AI phone detector runs
+  PHONE_CONFIDENCE: 0.32,
+  PHONE_CHECK_MS: 1000,         // how often the AI phone detector runs (~1/sec)
   PHONE_STRIKES: 2,             // 2 consecutive positives before phone is "confirmed"
   PHONE_ALERT_S: 1.2,           // 1.2s sustained phone -> ALERT (debounced)
   ALARM_COOLDOWN_MS: 4000,      // min gap between alarm restarts
@@ -300,17 +300,19 @@ function initAudio() {
   }
   if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
 }
-function sirenTone(freq, dur, vol) {
+function emergencyTone(freq, dur, vol, sub) {
   if (!audioCtx || audioCtx.state !== "running") return;
   const t0 = audioCtx.currentTime;
+  const env = audioCtx.createGain();
+  env.gain.setValueAtTime(0.0001, t0);
+  env.gain.exponentialRampToValueAtTime(vol, t0 + 0.03);
+  env.gain.setValueAtTime(vol, t0 + dur - 0.05);
+  env.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
   const osc = audioCtx.createOscillator();
-  const g = audioCtx.createGain();
   osc.type = "sawtooth";
-  osc.frequency.setValueAtTime(freq, t0);
-  g.gain.setValueAtTime(0.0001, t0);
-  g.gain.exponentialRampToValueAtTime(vol, t0 + 0.025);
-  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  osc.connect(g).connect(masterGain);
+  osc.frequency.setValueAtTime(freq * 0.82, t0);
+  osc.frequency.exponentialRampToValueAtTime(freq, t0 + 0.06);
+  osc.connect(env).connect(masterGain);
   osc.start(t0);
   osc.stop(t0 + dur + 0.05);
   const osc2 = audioCtx.createOscillator();
@@ -318,25 +320,38 @@ function sirenTone(freq, dur, vol) {
   osc2.type = "square";
   osc2.frequency.setValueAtTime(freq * 1.5, t0);
   g2.gain.setValueAtTime(0.0001, t0);
-  g2.gain.exponentialRampToValueAtTime(vol * 0.45, t0 + 0.025);
+  g2.gain.exponentialRampToValueAtTime(vol * 0.42, t0 + 0.03);
+  g2.gain.setValueAtTime(vol * 0.42, t0 + dur - 0.05);
   g2.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
   osc2.connect(g2).connect(masterGain);
   osc2.start(t0);
   osc2.stop(t0 + dur + 0.05);
+  if (sub) {
+    const osc3 = audioCtx.createOscillator();
+    const g3 = audioCtx.createGain();
+    osc3.type = "sine";
+    osc3.frequency.setValueAtTime(sub, t0);
+    g3.gain.setValueAtTime(0.0001, t0);
+    g3.gain.exponentialRampToValueAtTime(vol * 0.5, t0 + 0.05);
+    g3.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    osc3.connect(g3).connect(masterGain);
+    osc3.start(t0);
+    osc3.stop(t0 + dur + 0.05);
+  }
 }
-function dangerSiren() {
+function emergencySiren() {
   if (muted) return;
   initAudio();
-  // police/fire-style alternating two-tone danger siren
+  // company-grade "NEE-NAA" emergency horn on a low warning tone
   alarmPhase = !alarmPhase;
-  sirenTone(alarmPhase ? 620 : 940, 0.34, 0.95);
-  if (navigator.vibrate) navigator.vibrate([180, 100, 180]);
+  emergencyTone(alarmPhase ? 660 : 1040, 0.36, 0.98, 196);
+  if (navigator.vibrate) navigator.vibrate([220, 100, 220]);
 }
 function startAlarm() {
   if (muted || alarmTimer) return;
   initAudio();
-  dangerSiren();
-  alarmTimer = setInterval(dangerSiren, 380);
+  emergencySiren();
+  alarmTimer = setInterval(emergencySiren, 390);
 }
 function testAlarm() {
   muted = false;
@@ -345,7 +360,7 @@ function testAlarm() {
   initAudio();
   const ring = () => {
     if (!audioCtx || audioCtx.state !== "running") { initAudio(); return; }
-    if (n < 6) { dangerSiren(); n++; setTimeout(ring, 420); }
+    if (n < 8) { emergencySiren(); n++; setTimeout(ring, 400); }
     else if (alarmTimer) { clearInterval(alarmTimer); alarmTimer = null; }
   };
   ring();
@@ -548,6 +563,7 @@ async function startMonitoring() {
     if (!ok) {
       showCamError("Face AI failed to load (internet needed for the model). Use Demo Mode.");
     }
+    if (!cocoModel) loadPhoneModel(); // phone AI is ON by default while monitoring
     lastVideoTime = -1;
     rafId = requestAnimationFrame(analyzeFrame);
   }
@@ -688,7 +704,7 @@ function createDemoSimulator() {
     let dir = "FORWARD", away = false;
     if ((s > 17 && s < 19.5) || (s > 31 && s < 33.5)) { away = true; dir = "LEFT"; }
 
-    const phone = s > 28 && s < 30.5;
+    const phone = s > 31 && s < 33.5;
 
     return { ear: eyeBelow ? 0.12 : 0.34, eyeBelow, marAbove, phone, away, handDown: false, dir };
   };
@@ -806,3 +822,4 @@ if (!browserOk.audio) {
 }
 setApiStatus(false);
 apiTextEl.textContent = "API: " + API_BASE.replace(/^https?:\/\//, "");
+loadPhoneModel(); // warm up the phone AI in the background
