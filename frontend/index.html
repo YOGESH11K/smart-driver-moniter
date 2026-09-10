@@ -28,6 +28,7 @@
       <video id="webcam" playsinline muted></video>
       <canvas id="overlay"></canvas>
       <div id="noFace" class="no-face hidden">NO FACE</div>
+      <div id="alertOverlay" class="alert-overlay hidden"><span>DANGER</span></div>
       <div class="cam-badge" id="fpsBadge">0 FPS</div>
     </div>
     <div class="controls">
@@ -35,7 +36,12 @@
       <button id="btnDemo" class="btn ghost">Demo Mode (no camera)</button>
       <button id="btnReset" class="btn ghost">Reset Session</button>
     </div>
-    <p class="hint">Allow camera access. Detection runs entirely in your browser (MediaPipe AI) &mdash; privacy-friendly.</p>
+    <div class="toggles">
+      <button id="btnPhoneAI" class="chip" disabled>Phone AI: off</button>
+      <button id="btnPhoneSim" class="chip" disabled>Phone (simulate)</button>
+      <button id="btnHandSim" class="chip" disabled>Hands off wheel (simulate)</button>
+    </div>
+    <p class="hint">Allow camera access. Face detection runs in your browser (MediaPipe AI). Turn on <b>Phone AI</b> to detect a real phone with the camera; the simulate buttons add signals for classroom demos. A loud alarm sounds on danger (auto-stops when safe).</p>
   </section>
 
   <aside class="side">
@@ -85,6 +91,8 @@
   <span>Web detection: MediaPipe Face Landmarker &middot; Risk engine API: FastAPI</span>
 </footer>
 
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
 <script type="module" src="app.js"></script>
 </body>
 </html>

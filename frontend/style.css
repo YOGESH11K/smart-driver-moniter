@@ -71,7 +71,28 @@ body {
 }
 .hidden { display: none !important; }
 
+.alert-overlay {
+  position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none;
+  background: radial-gradient(circle at center, transparent 40%, rgba(255, 30, 60, .45) 100%);
+  border: 4px solid var(--red);
+  animation: pulse 0.8s infinite;
+}
+.alert-overlay span {
+  font-size: 34px; font-weight: 900; letter-spacing: 8px; color: #fff;
+  background: rgba(179, 18, 53, .85); padding: 10px 26px; border-radius: 12px;
+  box-shadow: 0 0 30px var(--red);
+}
+@keyframes pulse { 50% { box-shadow: inset 0 0 40px rgba(255, 60, 90, .6); } }
+
 .controls { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.toggles { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.chip {
+  border: 1px solid var(--line); background: rgba(10, 15, 31, .6); color: var(--muted);
+  border-radius: 999px; padding: 7px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: .15s;
+}
+.chip:not(:disabled):hover { border-color: var(--accent); color: var(--text); }
+.chip.on { border-color: var(--red); color: var(--red); }
+.chip:disabled { opacity: .4; cursor: not-allowed; }
 .btn {
   border: 0; cursor: pointer; border-radius: 10px; padding: 11px 18px;
   font-size: 14px; font-weight: 600; transition: .15s;

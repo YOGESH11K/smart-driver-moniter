@@ -17,6 +17,9 @@ const CFG = {
   YAW_THRESHOLD: 20,
   AWAY_CONSECUTIVE_FRAMES: 20,
   FACE_LOST_FRAMES: 45,         // face missing this long -> EYES OFF ROAD
+  ALARM_COOLDOWN_MS: 8000,      // min gap between alarm sounds
+  PHONE_CONFIDENCE: 0.4,
+  PHONE_CHECK_MS: 2500,         // how often the AI phone detector runs
   WEIGHTS: { eye_closure: 35, yawn: 20, head_away: 25, hand_down: 10, phone: 30 },
   THRESHOLDS: { safe_min: 80, caution_min: 60, attention_min: 40, drowsy_min: 20 },
 };
@@ -33,10 +36,12 @@ const API_BASE = new URLSearchParams(location.search).get("api") ||
 // ---------------------------------------------------------------------------
 const $ = (id) => document.getElementById(id);
 const video = $("webcam"), overlay = $("overlay"), ctx = overlay.getContext("2d");
-const noFaceEl = $("noFace");
+const noFaceEl = $("noFace"), alertOverlay = $("alertOverlay");
 const apiStatusEl = $("apiStatus"), apiTextEl = $("apiText");
 const stateEl = $("state"), reasonEl = $("reason"), gaugeFill = $("gaugeFill"), scoreEl = $("score");
 const fpsBadge = $("fpsBadge");
+const btnStart = $("btnStart"), btnDemo = $("btnDemo"), btnReset = $("btnReset");
+const btnPhoneAI = $("btnPhoneAI"), btnPhoneSim = $("btnPhoneSim"), btnHandSim = $("btnHandSim");
 
 // ---------------------------------------------------------------------------
 // State
@@ -48,23 +53,23 @@ let rafId = 0;
 let lastVideoTime = -1;
 let sessionId = "web-" + Math.random().toString(36).slice(2, 9);
 let sessionStart = null;
+let sim = null;
 
-// per-frame analysis
 let prevTime = performance.now();
 let fpsEma = 0;
 
 let ear = 0, mar = 0, pitch = 0, yaw = 0, roll = 0, headDir = "FORWARD";
 let closedFrames = 0, yawnFrames = 0, awayFrames = 0, faceLostFrames = 0, awayActive = false, yawnActive = false;
-let sim = null; // demo-mode signal generator
+
+// manual / AI overrides
+let phoneSimFlag = false;
+let handSimFlag = false;
+let phoneAIFlag = false;   // last result from the in-browser phone detector
 
 const stats = { blinks: 0, yawns: 0, closures: 0, away: 0, phone: 0 };
 
 const risk = {
-  risk_score: 0,
-  safety_score: 100,
-  state: "SAFE",
-  state_counter: 0,
-  total_risk_events: 0,
+  risk_score: 0, safety_score: 100, state: "SAFE", state_counter: 0, total_risk_events: 0,
   update(inputs) {
     let points = 0;
     if (inputs.eye_closure) points += CFG.WEIGHTS.eye_closure * Math.min(inputs.eye_closure_frames / 60, 1);
@@ -90,7 +95,6 @@ const risk = {
   reset() { this.risk_score = 0; this.safety_score = 100; this.state = "SAFE"; this.state_counter = 0; this.total_risk_events = 0; },
 };
 const computeState = (s) => s >= 80 ? "SAFE" : s >= 60 ? "CAUTION" : s >= 40 ? "ATTENTION REQUIRED" : s >= 20 ? "DROWSY / DISTRACTED" : "DANGER";
-const stateIndex = (s) => STATES.indexOf(s);
 
 // ---------------------------------------------------------------------------
 // Geometry helpers
@@ -117,7 +121,7 @@ function headPose(lm) {
 }
 
 // ---------------------------------------------------------------------------
-// MediaPipe setup
+// MediaPipe setup (face landmarks)
 // ---------------------------------------------------------------------------
 async function loadModel() {
   try {
@@ -133,18 +137,21 @@ async function loadModel() {
         },
         runningMode: "VIDEO",
         numFaces: 1,
-        outputFaceBlendshapes: false,
       });
     } catch {
       faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task", delegate: "CPU" },
+        baseOptions: {
+          modelAssetPath:
+            "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task",
+          delegate: "CPU",
+        },
         runningMode: "VIDEO",
         numFaces: 1,
       });
     }
-    return true;
+    return !!faceLandmarker;
   } catch (err) {
-    console.error("Model load failed:", err);
+    console.error("Face model load failed:", err);
     return false;
   }
 }
@@ -159,7 +166,6 @@ async function startCamera() {
 
 function drawFace(lm) {
   ctx.clearRect(0, 0, overlay.width, overlay.height);
-  // pupil lines
   for (const idx of [...EYE_LEFT.slice(0, 4), ...EYE_RIGHT.slice(0, 4), 1, 13, 14, 78, 308, 10, 152]) {
     const p = lm[idx];
     ctx.beginPath();
@@ -167,7 +173,6 @@ function drawFace(lm) {
     ctx.fillStyle = idx === 1 ? "#ffd166" : "#4d7cff";
     ctx.fill();
   }
-  // eye ellipses
   for (const idx of [EYE_LEFT, EYE_RIGHT]) {
     ctx.beginPath();
     ctx.moveTo(lm[idx[0]].x * overlay.width, lm[idx[0]].y * overlay.height);
@@ -180,26 +185,130 @@ function drawFace(lm) {
 }
 
 // ---------------------------------------------------------------------------
+// In-browser phone detection (TensorFlow.js COCO-SSD, cell phone class)
+// ---------------------------------------------------------------------------
+let cocoModel = null;
+let cocoLoading = false;
+let lastPhoneCheck = 0;
+
+async function loadPhoneModel() {
+  if (cocoModel || cocoLoading) return;
+  cocoLoading = true;
+  btnPhoneAI.textContent = "Phone AI: loading…";
+  try {
+    if (!window.cocoSsd || !window.tf) throw new Error("tfjs/coco-ssd not loaded");
+    cocoModel = await cocoSsd.load({ base: "mobilenet_v2" });
+    btnPhoneAI.classList.add("on");
+    btnPhoneAI.textContent = "Phone AI: ON";
+  } catch (e) {
+    console.error("Phone model failed:", e);
+    btnPhoneAI.textContent = "Phone AI: unavail.";
+    btnPhoneAI.disabled = true;
+  } finally {
+    cocoLoading = false;
+  }
+}
+
+async function checkPhoneAI(timestamp) {
+  if (!cocoModel || !running || demoMode) return;
+  if (timestamp - lastPhoneCheck < CFG.PHONE_CHECK_MS) return;
+  lastPhoneCheck = timestamp;
+  try {
+    const preds = await cocoModel.detect(video);
+    let seen = false, best = 0;
+    for (const p of preds) {
+      if (p.class === "cell phone" && p.score >= CFG.PHONE_CONFIDENCE) {
+        seen = true;
+        best = Math.max(best, p.score);
+      }
+    }
+    if (seen && !phoneAIFlag) stats.phone++;
+    phoneAIFlag = seen;
+    ctx.strokeStyle = seen ? "#ff4d5e" : "transparent";
+    if (seen) {
+      for (const p of preds) {
+        if (p.class !== "cell phone") continue;
+        const bw = overlay.width, bh = overlay.height;
+        ctx.lineWidth = 3;
+        ctx.strokeRect(p.bbox[0] / video.videoWidth * bw, p.bbox[1] / video.videoHeight * bh,
+          p.bbox[2] / video.videoWidth * bw, p.bbox[3] / video.videoHeight * bh);
+        ctx.fillStyle = "rgba(255,77,94,.9)";
+        ctx.font = "bold 14px Segoe UI, sans-serif";
+        ctx.fillText("PHONE " + Math.round(p.score * 100) + "%", p.bbox[0] / video.videoWidth * bw, (p.bbox[1] / video.videoHeight * bh) - 6);
+        break;
+      }
+    }
+  } catch (e) { /* skip frame */ }
+}
+
+// ---------------------------------------------------------------------------
+// Alarm (Web Audio API - no sound files needed)
+// ---------------------------------------------------------------------------
+let audioCtx = null, alarmTimer = null, lastAlarmEnd = 0;
+function initAudio() {
+  if (!audioCtx) {
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audioCtx = null; }
+  }
+  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+}
+function beep(freq, dur, gap) {
+  if (!audioCtx) return;
+  const t0 = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = "square";
+  osc.frequency.setValueAtTime(freq, t0);
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.exponentialRampToValueAtTime(0.35, t0 + 0.02);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(gain).connect(audioCtx.destination);
+  osc.start(t0);
+  osc.stop(t0 + dur + 0.05);
+}
+function startAlarm() {
+  if (alarmTimer) return;
+  beep(880, 0.18, 0);
+  alarmTimer = setInterval(() => beep(880, 0.18, 0), 900);
+  lastAlarmEnd = performance.now();
+}
+function stopAlarm() {
+  if (alarmTimer) { clearInterval(alarmTimer); alarmTimer = null; }
+}
+function dangerPresent(flags) {
+  return flags.eyeClosure || flags.yawn || flags.eyesOffRoad || flags.lookingAway || flags.phone || risk.state === "DANGER";
+}
+function updateAlarm(flags) {
+  const danger = dangerPresent(flags);
+  if (danger) {
+    initAudio();
+    if (!alarmTimer && performance.now() - lastAlarmEnd > CFG.ALARM_COOLDOWN_MS) startAlarm();
+  } else {
+    stopAlarm();
+  }
+  alertOverlay.classList.toggle("hidden", !danger);
+}
+
+// ---------------------------------------------------------------------------
 // Analysis pipeline (real webcam frames)
 // ---------------------------------------------------------------------------
 function analyzeFrame(timestamp) {
-  if (!faceLandmarker) return;
+  if (!faceLandmarker || !running) return;
   const now = performance.now();
   const dt = now - prevTime;
   prevTime = now;
   if (dt > 0) fpsEma = 0.9 * fpsEma + 0.1 * (1000 / dt);
   fpsBadge.textContent = Math.round(fpsEma) + " FPS";
 
+  let lm = null;
   if (video.currentTime !== lastVideoTime && video.readyState >= 2) {
     lastVideoTime = video.currentTime;
-    faceLandmarker.detectForVideo(video, timestamp).then((res) => {
-      let lm = null;
-      if (res.faceLandmarks && res.faceLandmarks.length > 0) lm = res.faceLandmarks[0];
-      processLandmarks(lm);
-    });
-  } else {
-    processLandmarks(null);
+    try {
+      const res = faceLandmarker.detectForVideo(video, timestamp);
+      if (res && res.faceLandmarks && res.faceLandmarks.length > 0) lm = res.faceLandmarks[0];
+    } catch (e) { /* single-frame error, ignore */ }
   }
+  processLandmarks(lm);
+  checkPhoneAI(timestamp).then(() => {});
   rafId = requestAnimationFrame(analyzeFrame);
 }
 
@@ -217,14 +326,13 @@ function processLandmarks(lm) {
     pitch = smooth(pitch, hp.pitch, 0.25);
     yaw = smooth(yaw, hp.yaw, 0.25);
     roll = smooth(roll, hp.roll, 0.25);
+    noFaceEl.classList.add("hidden");
   } else {
     faceLostFrames++;
     ctx.clearRect(0, 0, overlay.width, overlay.height);
+    ear = smooth(ear, ear, 0); mar = smooth(mar, mar, 0);
     noFaceEl.classList.toggle("hidden", faceLostFrames < 3);
-  }
-
-  if (!lm) {
-    ear = smooth(ear, 0, 0.2); mar = smooth(mar, 0, 0.2);
+    closedFrames = 0; yawnFrames = 0; awayFrames = 0; awayActive = false;
   }
 
   // --- blink / eye closure ---
@@ -242,7 +350,6 @@ function processLandmarks(lm) {
     if (!yawnActive) yawnFrames++;
     if (yawnFrames >= CFG.YAWN_CONSECUTIVE_FRAMES && !yawnActive) { yawn = true; yawnActive = true; stats.yawns++; }
   } else {
-    if (yawnActive && yawnFrames >= CFG.YAWN_CONSECUTIVE_FRAMES) yawnFrames = 0;
     yawnFrames = 0;
     yawnActive = false;
   }
@@ -261,16 +368,20 @@ function processLandmarks(lm) {
   } else if (awayFrames === 0) awayActive = false;
 
   const eyesOffRoad = faceLostFrames >= CFG.FACE_LOST_FRAMES;
+  const phone = phoneAIFlag || phoneSimFlag || (sim ? sim.phone : false);
+  const handDown = handSimFlag || (sim ? sim.handDown : false);
 
   risk.update({
     eye_closure: eyeClosure, eye_closure_frames: closedFrames,
     yawn, yawn_frames: yawnFrames,
     looking_away: lookingAway || eyesOffRoad, away_frames: Math.max(awayFrames, faceLostFrames),
-    hand_down: sim ? sim.handDown : false,
-    phone: sim ? sim.phone : false,
+    hand_down: handDown,
+    phone,
   });
-  updateUI({ eyeClosure, yawn, lookingAway, eyesOffRoad });
-  reportToBackend({ eyeClosure, yawn, lookingAway, eyesOffRoad });
+  const flags = { eyeClosure, yawn, lookingAway, eyesOffRoad, phone, handDown };
+  updateUI(flags);
+  updateAlarm(flags);
+  reportToBackend(flags);
 }
 
 function updateUI(flags) {
@@ -286,15 +397,15 @@ function updateUI(flags) {
   if (flags.yawn) reasons.push("YAWNING");
   if (flags.lookingAway) reasons.push("LOOKING AWAY");
   if (flags.eyesOffRoad) reasons.push("EYES OFF ROAD");
-  if (sim && sim.phone) reasons.push("PHONE");
-  if (sim && sim.handDown) reasons.push("HANDS OFF WHEEL");
+  if (flags.phone) reasons.push("PHONE");
+  if (flags.handDown) reasons.push("HANDS OFF WHEEL");
   reasonEl.textContent = reasons.length ? "ALERT: " + reasons.join(", ") : "All clear \u2014 keep driving.";
   reasonEl.classList.toggle("bad", reasons.length > 0);
 
   $("mEar").textContent = ear.toFixed(2);
-  $("barEar").style.width = Math.min(ear * 100, 100) + "%";
+  $("barEar").style.width = Math.min(Math.max(ear, 0) * 100, 100) + "%";
   $("mMar").textContent = mar.toFixed(2);
-  $("barMar").style.width = Math.min(mar * 100, 100) + "%";
+  $("barMar").style.width = Math.min(Math.max(mar, 0) * 100, 100) + "%";
   $("mPitch").textContent = Math.round(pitch) + "\u00b0";
   $("mYaw").textContent = Math.round(yaw) + "\u00b0";
   $("mRoll").textContent = Math.round(roll) + "\u00b0";
@@ -325,12 +436,13 @@ async function reportToBackend(flags) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        session_id: sessionId, ear, mar, pitch, yaw, roll,
+        session_id: sessionId, ear: +ear.toFixed(3), mar: +mar.toFixed(3),
+        pitch: +pitch.toFixed(1), yaw: +yaw.toFixed(1), roll: +roll.toFixed(1),
         eye_closed: flags.eyeClosure, eye_closure_frames: closedFrames,
-        yawn: flags.yawn, yawn_frames: yawnFrames,
+        yawn: flags.yawn, yawn_frames: flags.yawn ? CFG.YAWN_CONSECUTIVE_FRAMES : 0,
         looking_away: flags.lookingAway || flags.eyesOffRoad, away_frames: Math.max(awayFrames, faceLostFrames),
-        hand_down: sim ? sim.handDown : false,
-        phone: sim ? sim.phone : false,
+        hand_down: flags.handDown,
+        phone: flags.phone,
         face_present: faceLostFrames < CFG.FACE_LOST_FRAMES,
       }),
     });
@@ -352,125 +464,164 @@ function setApiStatus(online) {
 // Demo mode - synthetic signals (proves the system with no webcam)
 // ---------------------------------------------------------------------------
 function startDemo() {
-  demoMode = true;
-  running = true;
+  demoMode = true; running = true;
   sessionStart = Date.now();
-  $("btnStart").disabled = true;
-  $("btnDemo").disabled = true;
-  $("btnReset").disabled = false;
-  sim = createDemoSimulator();
-  const loop = () => {
-    if (!running) return;
-    const frame = sim();
-    ear = smooth(ear, frame.ear, 0.4);
-    mar = smooth(mar, frame.mar, 0.4);
-    pitch = smooth(pitch, frame.pitch, 0.25);
-    yaw = smooth(yaw, frame.yaw, 0.25);
-    roll = smooth(roll, 4, 0.25);
-    headDir = frame.dir;
-
-    closedFrames = frame.eyeClosed ? closedFrames + 1 : 0;
-    if (frame.eyeClosed && closedFrames >= CFG.EAR_CONSECUTIVE_FRAMES) frame.eyeClosure = true;
-    mar < CFG.MAR_THRESHOLD ? (yawnFrames = 0) : null;
-    yawnFrames = frame.yawn ? Math.max(yawnFrames, CFG.YAWN_CONSECUTIVE_FRAMES) : Math.max(0, yawnFrames - 1);
-    const yawnNow = frame.yawn && !yawnActive;
-    if (yawnNow) { stats.yawns++; yawnActive = true; }
-    if (!frame.yawn) yawnActive = false;
-
-    awayFrames = frame.away ? Math.max(awayFrames + 1, CFG.AWAY_CONSECUTIVE_FRAMES) : 0;
-    if (frame.away && !awayActive) { awayActive = true; stats.away++; }
-    if (!frame.away) awayActive = false;
-
-    risk.update({
-      eye_closure: !!frame.eyeClosure, eye_closure_frames: Math.max(closedFrames, CFG.EAR_CONSECUTIVE_FRAMES),
-      yawn: frame.yawn, yawn_frames: Math.max(yawnFrames, CFG.YAWN_CONSECUTIVE_FRAMES),
-      looking_away: frame.away, away_frames: Math.max(awayFrames, CFG.AWAY_CONSECUTIVE_FRAMES),
-      hand_down: frame.handDown, phone: frame.phone,
-    });
-    updateUI({ eyeClosure: !!frame.eyeClosure, yawn: frame.yawn, lookingAway: frame.away, eyesOffRoad: false });
-    reportToBackend({ eyeClosure: !!frame.eyeClosure, yawn: frame.yawn, lookingAway: frame.away, eyesOffRoad: false });
-    setTimeout(loop, 100);
-  };
-  loop();
+  initAudio();
+  btnStart.disabled = true; btnDemo.disabled = true; btnReset.disabled = false;
+  btnPhoneAI.disabled = btnPhoneSim.disabled = btnHandSim.disabled = true;
   noFaceEl.classList.add("hidden");
   ctx.clearRect(0, 0, overlay.width, overlay.height);
   ctx.fillStyle = "#2dd06e";
   ctx.font = "bold 26px Segoe UI, sans-serif";
   ctx.textAlign = "center";
-  ctx.fillText("DEMO MODE", overlay.width / 2, overlay.height / 2);
+  ctx.fillText("DEMO MODE", overlay.width / 2, overlay.height / 2 - 16);
+  sim = createDemoSimulator();
+  const loop = () => {
+    if (!running) return;
+    const frame = sim();
+    ear = smooth(ear, Math.max(frame.ear, 0.02), 0.4);
+    mar = smooth(mar, Math.max(frame.mar, 0.05), 0.4);
+    pitch = smooth(pitch, frame.pitch, 0.25);
+    yaw = smooth(yaw, frame.yaw, 0.25);
+    roll = smooth(roll, 4, 0.25);
+    headDir = frame.dir;
+    closedFrames = frame.eyeClosed ? closedFrames + 1 : 0;
+    yawnActive = frame.yawn ? true : false;
+    if (frame.yawn && frame.yawnNew) stats.yawns++;
+    awayActive = frame.away ? true : false;
+    if (frame.away && frame.awayNew) stats.away++;
+    if (frame.phone && frame.phoneNew) stats.phone++;
+
+    const flags = {
+      eyeClosure: frame.eyeClosed && closedFrames >= CFG.EAR_CONSECUTIVE_FRAMES,
+      yawn: frame.yawn,
+      lookingAway: frame.away,
+      eyesOffRoad: false,
+      phone: frame.phone,
+      handDown: frame.handDown,
+    };
+    risk.update({
+      eye_closure: flags.eyeClosure, eye_closure_frames: Math.max(closedFrames, CFG.EAR_CONSECUTIVE_FRAMES),
+      yawn: frame.yawn, yawn_frames: frame.yawn ? CFG.YAWN_CONSECUTIVE_FRAMES : 0,
+      looking_away: frame.away, away_frames: frame.away ? CFG.AWAY_CONSECUTIVE_FRAMES : 0,
+      hand_down: frame.handDown, phone: frame.phone,
+    });
+    updateUI(flags);
+    updateAlarm(flags);
+    reportToBackend(flags);
+    setTimeout(loop, 100);
+  };
+  loop();
 }
 
 function createDemoSimulator() {
-  let t = 0, blinkPhase = 0, blinkOn = false;
+  let t = 0, blinkPhase = 0, blinkOn = false, blinkDur = 0;
+  let prevYawn = false, prevAway = false, prevPhone = false;
   return function step() {
     t += 100;
-    // blink every ~4s
+
     blinkPhase += 100;
     if (blinkPhase > 4000) { blinkOn = true; blinkPhase = 0; blinkDur = 0; }
-    let ear = 0.34;
-    let eyeClosed = false;
-    if (blinkOn) { blinkDur++; if (blinkDur < 4) { ear = 0.15; if (blinkDur === 3 && ear < CFG.EAR_THRESHOLD) {} } else blinkOn = false; }
-    if (t > 9000 && t < 17500) { ear = 0.12; eyeClosed = true; }       // sustained closure
-    if (t > 21000 && t < 26000) { ear = 0.12; eyeClosed = true; }       // second closure -> DANGER
+    let ear = 0.34, eyeClosed = false;
+    if (blinkOn) { blinkDur++; if (blinkDur < 4) ear = 0.15; else blinkOn = false; }
+    if (t > 9000 && t < 17500) { ear = 0.12; eyeClosed = true; }
+    if (t > 21000 && t < 26000) { ear = 0.12; eyeClosed = true; }
     if (t > 28000) { ear = 0.12; eyeClosed = true; }
 
-    let mar = 0.18;
-    let yawn = false;
+    let mar = 0.18, yawn = false;
     if ((t > 8000 && t < 9500) || (t > 20500 && t < 22000)) { mar = 0.62; yawn = true; }
 
     let pitch = 0, yaw = 0, dir = "FORWARD";
-    if (t > 12000 && t < 13500) { yaw = 26; dir = "LEFT"; }            // looking away
+    if (t > 12000 && t < 13500) { yaw = 26; dir = "LEFT"; }
     if (t > 13500 && t < 15000) { yaw = -26; dir = "RIGHT"; }
 
-    return {
-      ear, eyeClosed, mar, yawn, pitch, yaw, dir,
-      away: dir !== "FORWARD",
-      phone: t > 19000 && t < 20500,
-      handDown: false,
-    };
+    const away = dir !== "FORWARD";
+    const phone = t > 19000 && t < 20500;
+
+    const yawnNew = yawn && !prevYawn;
+    const awayNew = away && !prevAway;
+    const phoneNew = phone && !prevPhone;
+    prevYawn = yawn; prevAway = away; prevPhone = phone;
+
+    return { ear, eyeClosed, mar, yawn, yawnNew, pitch, yaw, dir, away, awayNew, phone, phoneNew, handDown: false };
   };
 }
-let blinkDur = 0;
 
 // ---------------------------------------------------------------------------
 // Controls
 // ---------------------------------------------------------------------------
 async function startMonitoring() {
+  initAudio();
   try {
     await startCamera();
   } catch (e) {
     alert("Camera blocked or unavailable. Use Demo Mode instead.");
     return;
   }
-  demoMode = false;
-  running = true;
+  demoMode = false; running = true;
   sessionStart = Date.now();
-  $("btnStart").disabled = true;
-  $("btnDemo").disabled = false;
-  $("btnReset").disabled = false;
-  await loadModel();
+  btnStart.disabled = true; btnDemo.disabled = false; btnReset.disabled = false;
+  btnPhoneSim.disabled = false; btnHandSim.disabled = false;
+  btnPhoneAI.disabled = false;
+  btnPhoneSim.classList.remove("on");
+  btnHandSim.classList.remove("on");
+  phoneSimFlag = false; handSimFlag = false;
+  const ok = await loadModel();
+  if (!ok) alert("Face AI failed to load. Check your internet connection, or use Demo Mode.");
   lastVideoTime = -1;
+  resetOverlay();
   rafId = requestAnimationFrame(analyzeFrame);
 }
 
+function resetOverlay() {
+  overlay.width = video.videoWidth || 640;
+  overlay.height = video.videoHeight || 480;
+}
+
 function stopAll() {
-  running = false;
+  running = false; demoMode = false;
   cancelAnimationFrame(rafId);
+  stopAlarm();
   sim = null;
   if (video.srcObject) video.srcObject.getTracks().forEach((tr) => tr.stop());
 }
 
-$("btnStart").addEventListener("click", startMonitoring);
-$("btnDemo").addEventListener("click", () => { stopAll(); startDemo(); });
-$("btnReset").addEventListener("click", () => {
+btnStart.addEventListener("click", startMonitoring);
+btnDemo.addEventListener("click", () => { stopAll(); startDemo(); });
+btnReset.addEventListener("click", () => {
+  const wasDemo = demoMode;
   Object.assign(stats, { blinks: 0, yawns: 0, closures: 0, away: 0, phone: 0 });
   risk.reset();
   sessionStart = Date.now();
   ear = 0; mar = 0; pitch = 0; yaw = 0; roll = 0; closedFrames = 0; yawnFrames = 0; awayFrames = 0;
-  ctx.clearRect(0, 0, overlay.width, overlay.height);
-  updateUI({ eyeClosure: false, yawn: false, lookingAway: false, eyesOffRoad: false });
+  phoneAIFlag = false; phoneSimFlag = false; handSimFlag = false;
+  btnPhoneSim.classList.remove("on"); btnHandSim.classList.remove("on");
+  stopAll();
+  if (wasDemo) startDemo();
+  else startMonitoring();
   fetch(API_BASE + "/api/reset?session_id=" + encodeURIComponent(sessionId)).catch(() => {});
 });
 
+btnPhoneAI.addEventListener("click", () => {
+  if (cocoModel) {
+    phoneAIFlag = false;
+    cocoModel = null;
+    btnPhoneAI.classList.remove("on");
+    btnPhoneAI.textContent = "Phone AI: off";
+  } else {
+    loadPhoneModel();
+  }
+});
+
+btnPhoneSim.addEventListener("click", () => {
+  phoneSimFlag = !phoneSimFlag;
+  btnPhoneSim.classList.toggle("on", phoneSimFlag);
+});
+btnHandSim.addEventListener("click", () => {
+  handSimFlag = !handSimFlag;
+  btnHandSim.classList.toggle("on", handSimFlag);
+});
+
 setApiStatus(false);
+btnPhoneAI.disabled = true;
 apiTextEl.textContent = "API: " + API_BASE.replace(/^https?:\/\//, "");
