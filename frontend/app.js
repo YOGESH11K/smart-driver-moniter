@@ -7,10 +7,10 @@ import {
 // Thresholds (time-based; mirror config/config.yaml where applicable)
 // ---------------------------------------------------------------------------
 const CFG = {
-  EAR_THRESHOLD: 0.21,          // EAR below this = eye closed
-  EYE_MIN_FRAMES: 3,            // require 3 bad frames before starting the eye timer (no single-frame alerts)
+  EAR_THRESHOLD: 0.25,          // EAR below this = eye closed (sensitive: works from normal webcam distance)
+  EYE_MIN_FRAMES: 2,            // require 2 bad frames before starting the eye timer (no single-frame alerts)
   EYE_ALERT_S: 2.0,             // 2s continuous eye closure -> ALERT
-  MAR_THRESHOLD: 0.50,          // MAR above this = mouth open (yawning)
+  MAR_THRESHOLD: 0.45,          // MAR above this = mouth open (yawning)
   YAWN_MIN_FRAMES: 2,
   YAWN_ALERT_S: 2.0,            // 2s continuous yawning -> ALERT
   PITCH_THRESHOLD: 15,
@@ -21,7 +21,7 @@ const CFG = {
   PHONE_CHECK_MS: 1500,         // how often the AI phone detector runs
   PHONE_STRIKES: 2,             // 2 consecutive positives before phone is "confirmed"
   PHONE_ALERT_S: 1.2,           // 1.2s sustained phone -> ALERT (debounced)
-  ALARM_COOLDOWN_MS: 8000,      // min gap between alarm restarts
+  ALARM_COOLDOWN_MS: 4000,      // min gap between alarm restarts
   WEIGHTS: { eye_closure: 35, yawn: 20, head_away: 25, hand_down: 10, phone: 30 },
   THRESHOLDS: { safe_min: 80, caution_min: 60, attention_min: 40, drowsy_min: 20 },
 };
@@ -44,7 +44,7 @@ const apiStatusEl = $("apiStatus"), apiTextEl = $("apiText");
 const statusEl = $("statusIndicator"), statusTextEl = $("statusText");
 const gaugeFill = $("gaugeFill"), scoreEl = $("score"), reasonEl = $("reason");
 const fpsBadge = $("fpsBadge");
-const btnStart = $("btnStart"), btnDemo = $("btnDemo"), btnReset = $("btnReset"), btnMute = $("btnMute");
+const btnStart = $("btnStart"), btnDemo = $("btnDemo"), btnReset = $("btnReset"), btnMute = $("btnMute"), btnTest = $("btnTest");
 const btnPhoneAI = $("btnPhoneAI"), btnPhoneSim = $("btnPhoneSim"), btnHandSim = $("btnHandSim");
 const dots = { eye: $("dotEye"), yawn: $("dotYawn"), phone: $("dotPhone") };
 
@@ -71,6 +71,7 @@ let fpsEma = 0;
 let ear = 0, mar = 0, pitch = 0, yaw = 0, roll = 0, headDir = "FORWARD";
 let faceLostFrames = 0;
 let earStrikes = 0, marStrikes = 0, aweStrike = 0, belowStreak = 0;
+const holds = { eye: 0, yawn: 0, phone: 0, face: 0 };
 let awayActive = false;
 
 let phoneSimFlag = false, handSimFlag = false;
@@ -122,12 +123,13 @@ const risk = {
     this.risk_score = norm;
     this.safety_score = Math.max(0, 100 - norm);
     const newState = computeState(this.safety_score);
+    const oldState = this.state;
     if (newState !== this.state) {
       this.state_counter++;
       if (this.state_counter >= 5) {
         this.state = newState;
         this.state_counter = 0;
-        if (STATES.indexOf(newState) > STATES.indexOf(this.state)) this.total_risk_events++;
+        if (STATES.indexOf(newState) > STATES.indexOf(oldState)) this.total_risk_events++;
       }
     } else this.state_counter = 0;
   },
@@ -282,31 +284,71 @@ async function checkPhoneAI(now) {
 // ---------------------------------------------------------------------------
 // Alarm (Web Audio; unlocked by the user clicking Start / Demo)
 // ---------------------------------------------------------------------------
-let audioCtx = null, alarmTimer = null, alarmStoppedAt = 0, muted = false;
+let audioCtx = null, masterGain = null, alarmTimer = null, alarmStoppedAt = 0, muted = false, alarmPhase = false;
 
 function initAudio() {
   if (!browserOk.audio) return;
-  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = 1.0;
+    const comp = audioCtx.createDynamicsCompressor();
+    comp.threshold.value = -8;
+    comp.knee.value = 14;
+    comp.ratio.value = 16;
+    masterGain.connect(comp).connect(audioCtx.destination);
+  }
+  if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
 }
-function beep(freq, dur) {
-  if (!audioCtx) return;
+function sirenTone(freq, dur, vol) {
+  if (!audioCtx || audioCtx.state !== "running") return;
   const t0 = audioCtx.currentTime;
   const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  osc.type = "square";
+  const g = audioCtx.createGain();
+  osc.type = "sawtooth";
   osc.frequency.setValueAtTime(freq, t0);
-  gain.gain.setValueAtTime(0.0001, t0);
-  gain.gain.exponentialRampToValueAtTime(0.35, t0 + 0.02);
-  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
-  osc.connect(gain).connect(audioCtx.destination);
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(vol, t0 + 0.025);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc.connect(g).connect(masterGain);
   osc.start(t0);
   osc.stop(t0 + dur + 0.05);
+  const osc2 = audioCtx.createOscillator();
+  const g2 = audioCtx.createGain();
+  osc2.type = "square";
+  osc2.frequency.setValueAtTime(freq * 1.5, t0);
+  g2.gain.setValueAtTime(0.0001, t0);
+  g2.gain.exponentialRampToValueAtTime(vol * 0.45, t0 + 0.025);
+  g2.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+  osc2.connect(g2).connect(masterGain);
+  osc2.start(t0);
+  osc2.stop(t0 + dur + 0.05);
+}
+function dangerSiren() {
+  if (muted) return;
+  initAudio();
+  // police/fire-style alternating two-tone danger siren
+  alarmPhase = !alarmPhase;
+  sirenTone(alarmPhase ? 620 : 940, 0.34, 0.95);
+  if (navigator.vibrate) navigator.vibrate([180, 100, 180]);
 }
 function startAlarm() {
   if (muted || alarmTimer) return;
-  beep(880, 0.18);
-  alarmTimer = setInterval(() => beep(880, 0.18), 900);
+  initAudio();
+  dangerSiren();
+  alarmTimer = setInterval(dangerSiren, 380);
+}
+function testAlarm() {
+  muted = false;
+  applyMuteUI();
+  let n = 0;
+  initAudio();
+  const ring = () => {
+    if (!audioCtx || audioCtx.state !== "running") { initAudio(); return; }
+    if (n < 6) { dangerSiren(); n++; setTimeout(ring, 420); }
+    else if (alarmTimer) { clearInterval(alarmTimer); alarmTimer = null; }
+  };
+  ring();
 }
 function stopAlarm(recordCooldown) {
   if (alarmTimer) { clearInterval(alarmTimer); alarmTimer = null; }
@@ -325,22 +367,34 @@ function applyMuteUI() {
 // Core evaluation - shared by live camera and demo mode
 // ---------------------------------------------------------------------------
 function evaluate(now, sig) {
+  // flicker tolerance: a signal stays "on" for a few frames after it drops,
+  // so a camera/laptop hiccup can't reset a real yawning / eye-closure timer.
+  const holdCond = (active, key) => {
+    if (active) { holds[key] = 0; return true; }
+    if (holds[key] < 4) { holds[key]++; return true; }
+    return false;
+  };
+  const eyeOn = holdCond(sig.eyeBelow && sig.facePresent, "eye");
+  const yawnOn = holdCond(sig.marAbove && sig.facePresent, "yawn");
+  const phoneOn = holdCond(sig.phone, "phone");
+  const faceOn = holdCond(!sig.facePresent, "face");
+
   // eye closure (debounced, then timed)
-  if (sig.eyeBelow && sig.facePresent) earStrikes++; else earStrikes = 0;
+  if (eyeOn) earStrikes++; else earStrikes = 0;
   const eyeEl = earStrikes >= CFG.EYE_MIN_FRAMES;
   eyeCond.update(eyeEl, now);
 
   // yawning
-  if (sig.marAbove && sig.facePresent) marStrikes++; else marStrikes = 0;
+  if (yawnOn) marStrikes++; else marStrikes = 0;
   const yawn = marStrikes >= CFG.YAWN_MIN_FRAMES;
   yawnCond.update(yawn, now);
 
   // phone (debounced AI strikes / sim flags)
-  phoneCond.update(sig.phone, now);
+  phoneCond.update(phoneOn, now);
 
   // face present
   if (sig.facePresent) faceLostFrames = 0; else faceLostFrames++;
-  faceCond.update(!sig.facePresent, now);
+  faceCond.update(faceOn, now);
 
   // head away (warning + risk only, no alarm)
   if (sig.away) aweStrike++; else { aweStrike = 0; awayActive = false; }
@@ -540,7 +594,7 @@ function analyzeFrame(timestamp) {
   // blink counter: a dip that lasted a bit but clearly was not a 2s drowsy closure
   if (ear < CFG.EAR_THRESHOLD) belowStreak++;
   else {
-    if (belowStreak >= CFG.EYE_MIN_FRAMES && belowStreak < 25) stats.blinks++;
+    if (belowStreak >= CFG.EYE_MIN_FRAMES && belowStreak < 18) stats.blinks++;
     belowStreak = 0;
   }
 
@@ -712,6 +766,11 @@ btnMute.addEventListener("click", () => {
   if (muted) stopAlarm(false);
   else updateAlarm(performance.now(), eyeCond.alert || yawnCond.alert || phoneCond.alert || faceCond.alert);
   applyMuteUI();
+});
+
+btnTest.addEventListener("click", () => {
+  initAudio();
+  testAlarm();
 });
 
 btnPhoneAI.addEventListener("click", () => {

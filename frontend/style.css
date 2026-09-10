@@ -98,6 +98,8 @@ body {
 .btn.danger { background: var(--red); color: #fff; }
 .btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
 .btn.ghost:hover { border-color: var(--accent); }
+.btn.danger-ghost { background: rgba(255,77,94,.12); color: #ff4d5e; border: 1px solid rgba(255,77,94,.5); }
+.btn.danger-ghost:hover { background: rgba(255,77,94,.22); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 
 .toggles { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
