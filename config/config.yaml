@@ -1,0 +1,95 @@
+camera:
+  index: 0
+  width: 640
+  height: 480
+  target_fps: 30
+
+detection:
+  face:
+    model_path: "models/face_landmarker.task"
+    num_faces: 1
+    min_detection_confidence: 0.5
+    min_tracking_confidence: 0.5
+
+  hand:
+    model_path: "models/hand_landmarker.task"
+    max_hands: 2
+    min_detection_confidence: 0.5
+    min_tracking_confidence: 0.5
+    safe_region_y_max: 0.7
+    down_duration_frames: 15
+
+  phone:
+    enabled: true
+    model_path: "models/yolov8n.pt"
+    confidence_threshold: 0.4     # PHONE_CONFIDENCE_THRESHOLD
+    check_interval: 3
+    face_region_y_min: 0.0
+    face_region_y_max: 0.5
+
+  eyes:
+    ear_threshold: 0.21           # EYE_CLOSED_THRESHOLD (EAR below this = closed)
+    ear_consecutive_frames: 45    # consecutive closed frames (~1.5-2 s) before alarm
+    blink_min_frames: 2
+    blink_max_frames: 6
+
+  mouth:
+    mar_threshold: 0.50           # YAWN_THRESHOLD (MAR above this = yawning)
+    yawn_consecutive_frames: 30
+
+  head_pose:
+    pitch_threshold: 15
+    yaw_threshold: 20
+    away_consecutive_frames: 20
+
+alarm:
+  enabled: true
+  sound_enabled: true
+  sound_path: "assets/sounds/"
+  sound_file: "alarm.wav"
+  cooldown_seconds: 10           # ALARM_COOLDOWN - min gap between sound starts
+  alarm_duration_seconds: 8      # ALARM_DURATION - how long each sound plays
+  yawn_cooldown_seconds: 8       # debounce: ignore the same yawn within this window
+  eyes_off_threshold_seconds: 1.5  # face missing this long -> "EYES OFF THE ROAD"
+
+risk_engine:
+  weights:
+    eye_closure: 35
+    yawn: 20
+    head_away: 25
+    hand_down: 10
+    phone: 30
+
+  state_thresholds:
+    safe_min: 80
+    caution_min: 60
+    attention_min: 40
+    drowsy_min: 20
+
+  transition_frames:
+    to_caution: 10
+    to_attention: 15
+    to_danger: 10
+    recovery_to_caution: 40
+    recovery_to_safe: 50
+
+alerts:
+  cooldown_seconds: 5
+  sound_enabled: true
+  sound_path: "assets/sounds/"
+  visual_duration_seconds: 3
+
+gui:
+  theme: "dark"
+  width: 1200
+  height: 700
+  show_landmarks: true
+  show_head_arrow: true
+
+storage:
+  enabled: true
+  db_path: "~/.smart_driver_monitor/sessions.db"
+
+logging:
+  level: "INFO"
+  file: "driver_monitor.log"

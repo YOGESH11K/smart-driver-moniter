@@ -1,0 +1,72 @@
+alerts:
+  cooldown_seconds: 5
+  sound_enabled: true
+  sound_path: assets/sounds/
+  visual_duration_seconds: 3
+camera:
+  height: 480
+  index: 0
+  target_fps: 30
+  width: 640
+detection:
+  eyes:
+    blink_max_frames: 6
+    blink_min_frames: 2
+    ear_consecutive_frames: 45
+    ear_threshold: 0.21
+  face:
+    min_detection_confidence: 0.5
+    min_tracking_confidence: 0.5
+    model_path: models/face_landmarker.task
+    num_faces: 1
+  hand:
+    down_duration_frames: 15
+    max_hands: 2
+    min_detection_confidence: 0.5
+    min_tracking_confidence: 0.5
+    model_path: models/hand_landmarker.task
+    safe_region_y_max: 0.7
+  head_pose:
+    away_consecutive_frames: 20
+    pitch_threshold: 15
+    yaw_threshold: 20
+  mouth:
+    mar_threshold: 0.5
+    yawn_consecutive_frames: 30
+  phone:
+    check_interval: 3
+    confidence_threshold: 0.4
+    enabled: true
+    face_region_y_max: 0.5
+    face_region_y_min: 0.0
+    model_path: models/yolov8n.pt
+gui:
+  height: 700
+  show_head_arrow: true
+  show_landmarks: true
+  theme: dark
+  width: 1200
+logging:
+  file: driver_monitor.log
+  level: INFO
+risk_engine:
+  state_thresholds:
+    attention_min: 40
+    caution_min: 60
+    drowsy_min: 20
+    safe_min: 80
+  transition_frames:
+    recovery_to_caution: 40
+    recovery_to_safe: 50
+    to_attention: 15
+    to_caution: 10
+    to_danger: 10
+  weights:
+    eye_closure: 35
+    hand_down: 10
+    head_away: 25
+    phone: 30
+    yawn: 20
+storage:
+  db_path: ~/.smart_driver_monitor/sessions.db
+  enabled: true

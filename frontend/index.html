@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Smart Driver Monitor - Live Demo</title>
+<meta name="description" content="Real-time driver drowsiness &amp; distraction detection demo. Runs face detection in your browser and classifies risk with the Smart Driver risk engine." />
+<link rel="preconnect" href="https://cdn.jsdelivr.net" />
+<link rel="preconnect" href="https://storage.googleapis.com" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">SDM</span>
+    <div>
+      <h1>Smart Driver Monitor</h1>
+      <p>Drowsiness &distraction detection &mdash; live web demo</p>
+    </div>
+  </div>
+  <div class="api-status" id="apiStatus"><span class="dot"></span><span id="apiText">API: connecting&hellip;</span></div>
+</header>
+
+<main class="layout">
+  <section class="card camera-card">
+    <div class="cam-wrap">
+      <video id="webcam" playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <div id="noFace" class="no-face hidden">NO FACE</div>
+      <div class="cam-badge" id="fpsBadge">0 FPS</div>
+    </div>
+    <div class="controls">
+      <button id="btnStart" class="btn primary">Start Monitoring</button>
+      <button id="btnDemo" class="btn ghost">Demo Mode (no camera)</button>
+      <button id="btnReset" class="btn ghost">Reset Session</button>
+    </div>
+    <p class="hint">Allow camera access. Detection runs entirely in your browser (MediaPipe AI) &mdash; privacy-friendly.</p>
+  </section>
+
+  <aside class="side">
+    <section class="card">
+      <div class="state-row">
+        <span class="state-label">Status</span>
+        <span id="state" class="state-pill">SAFE</span>
+      </div>
+      <div class="gauge">
+        <div class="gauge-track"><div class="gauge-fill" id="gaugeFill"></div></div>
+        <div class="gauge-scale">
+          <span>0</span><span>20</span><span>40</span><span>60</span><span>80</span><span>100</span>
+        </div>
+        <div class="gauge-readout"><span id="score">100</span><small>/100 safety</small></div>
+      </div>
+      <div id="reason" class="reason">All clear &mdash; keep driving.</div>
+    </section>
+
+    <section class="card">
+      <h2>Live Signals</h2>
+      <div class="grid2">
+        <div class="metric"><label>EAR (eyes)</label><b id="mEar">0.00</b><div class="bar"><i id="barEar"></i></div></div>
+        <div class="metric"><label>MAR (mouth)</label><b id="mMar">0.00</b><div class="bar"><i id="barMar"></i></div></div>
+        <div class="metric"><label>Pitch</label><b id="mPitch">0&deg;</b></div>
+        <div class="metric"><label>Yaw</label><b id="mYaw">0&deg;</b></div>
+        <div class="metric"><label>Roll</label><b id="mRoll">0&deg;</b></div>
+        <div class="metric"><label>Head dir</label><b id="mDir">FORWARD</b></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Session Stats</h2>
+      <div class="grid2">
+        <div class="stat"><label>Blinks</label><b id="sBlinks">0</b></div>
+        <div class="stat"><label>Yawns</label><b id="sYawns">0</b></div>
+        <div class="stat"><label>Eye closures</label><b id="sClosures">0</b></div>
+        <div class="stat"><label>Looking away</label><b id="sAway">0</b></div>
+        <div class="stat"><label>Phone events</label><b id="sPhone">0</b></div>
+        <div class="stat"><label>Time</label><b id="sTime">0:00</b></div>
+      </div>
+    </section>
+  </aside>
+</main>
+
+<footer class="foot">
+  <span>Research / school prototype &mdash; NOT a certified automotive safety system.</span>
+  <span>Web detection: MediaPipe Face Landmarker &middot; Risk engine API: FastAPI</span>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
