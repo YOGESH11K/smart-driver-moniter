@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Smart Driver Monitor - Live Demo</title>
-<meta name="description" content="Real-time driver drowsiness &amp; distraction detection demo. Runs face detection in your browser and classifies risk with the Smart Driver risk engine." />
+<title>Smart Driver Monitor - Real-Time Safety Monitoring</title>
+<meta name="description" content="Real-time driver safety monitoring: yawn, drowsiness (eye closure) and phone-usage detection using the device camera. 100% in-browser AI." />
 <link rel="preconnect" href="https://cdn.jsdelivr.net" />
 <link rel="preconnect" href="https://storage.googleapis.com" />
 <link rel="stylesheet" href="style.css" />
@@ -16,7 +16,7 @@
     <span class="logo">SDM</span>
     <div>
       <h1>Smart Driver Monitor</h1>
-      <p>Drowsiness &distraction detection &mdash; live web demo</p>
+      <p>Real-time safety monitoring &mdash; yawn &middot; drowsiness &middot; phone</p>
     </div>
   </div>
   <div class="api-status" id="apiStatus"><span class="dot"></span><span id="apiText">API: connecting&hellip;</span></div>
@@ -28,46 +28,86 @@
       <video id="webcam" playsinline muted></video>
       <canvas id="overlay"></canvas>
       <div id="noFace" class="no-face hidden">NO FACE</div>
-      <div id="alertOverlay" class="alert-overlay hidden"><span>DANGER</span></div>
+      <div id="camError" class="cam-error hidden"></div>
+      <div id="camNote" class="cam-note hidden">Monitoring stopped</div>
+      <div id="alertOverlay" class="alert-overlay hidden">
+        <div class="alert-box"><span class="alert-title">ALERT</span><span id="alertReason">Drowsiness Detected</span></div>
+      </div>
       <div class="cam-badge" id="fpsBadge">0 FPS</div>
     </div>
+
     <div class="controls">
       <button id="btnStart" class="btn primary">Start Monitoring</button>
       <button id="btnDemo" class="btn ghost">Demo Mode (no camera)</button>
       <button id="btnReset" class="btn ghost">Reset Session</button>
+      <button id="btnMute" class="btn ghost" title="Mute / unmute alarm">Mute Alarm</button>
     </div>
+
     <div class="toggles">
       <button id="btnPhoneAI" class="chip" disabled>Phone AI: off</button>
       <button id="btnPhoneSim" class="chip" disabled>Phone (simulate)</button>
       <button id="btnHandSim" class="chip" disabled>Hands off wheel (simulate)</button>
     </div>
-    <p class="hint">Allow camera access. Face detection runs in your browser (MediaPipe AI). Turn on <b>Phone AI</b> to detect a real phone with the camera; the simulate buttons add signals for classroom demos. A loud alarm sounds on danger (auto-stops when safe).</p>
+
+    <p class="hint">
+      Allow camera access and stay centered. Face detection runs <b>entirely in your browser</b>
+      (MediaPipe AI) &mdash; no frames are uploaded. Turn on <b>Phone AI</b> to detect a real phone;
+      the simulate chips add signals for classroom demos.
+    </p>
   </section>
 
   <aside class="side">
     <section class="card">
-      <div class="state-row">
-        <span class="state-label">Status</span>
-        <span id="state" class="state-pill">SAFE</span>
+      <div class="state-label">Status</div>
+      <div id="statusIndicator" class="status-indicator normal">
+        <span class="status-lamp"></span><span id="statusText">NORMAL</span>
       </div>
       <div class="gauge">
         <div class="gauge-track"><div class="gauge-fill" id="gaugeFill"></div></div>
-        <div class="gauge-scale">
-          <span>0</span><span>20</span><span>40</span><span>60</span><span>80</span><span>100</span>
-        </div>
+        <div class="gauge-scale"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
         <div class="gauge-readout"><span id="score">100</span><small>/100 safety</small></div>
       </div>
       <div id="reason" class="reason">All clear &mdash; keep driving.</div>
     </section>
 
     <section class="card">
+      <h2>Alert Timer</h2>
+      <p class="timer-hint">Alarm triggers when a condition lasts ~2&nbsp;seconds.</p>
+
+      <div class="cond">
+        <div class="cond-row">
+          <span class="cond-name"><i class="dot" id="dotEye"></i>Eye closure</span>
+          <b id="tEye">Open</b>
+        </div>
+        <div class="cond-track"><i id="tEyeBar"></i><span class="mark" style="left:50%"></span></div>
+        <small id="tEyeSub" class="cond-sub">EAR <span id="mEar">0.00</span></small>
+      </div>
+
+      <div class="cond">
+        <div class="cond-row">
+          <span class="cond-name"><i class="dot" id="dotYawn"></i>Yawning</span>
+          <b id="tYawn">Normal</b>
+        </div>
+        <div class="cond-track"><i id="tYawnBar"></i><span class="mark" style="left:50%"></span></div>
+        <small class="cond-sub">MAR <span id="mMar">0.00</span></small>
+      </div>
+
+      <div class="cond">
+        <div class="cond-row">
+          <span class="cond-name"><i class="dot" id="dotPhone"></i>Phone in hand</span>
+          <b id="tPhone">Not detected</b>
+        </div>
+        <div class="cond-track"><i id="tPhoneBar"></i><span class="mark" style="left:60%"></span></div>
+        <small class="cond-sub">Conf <span id="phoneConf">-</span> &middot; <span id="phoneMode">disabled</span></small>
+      </div>
+    </section>
+
+    <section class="card">
       <h2>Live Signals</h2>
       <div class="grid2">
-        <div class="metric"><label>EAR (eyes)</label><b id="mEar">0.00</b><div class="bar"><i id="barEar"></i></div></div>
-        <div class="metric"><label>MAR (mouth)</label><b id="mMar">0.00</b><div class="bar"><i id="barMar"></i></div></div>
-        <div class="metric"><label>Pitch</label><b id="mPitch">0&deg;</b></div>
-        <div class="metric"><label>Yaw</label><b id="mYaw">0&deg;</b></div>
-        <div class="metric"><label>Roll</label><b id="mRoll">0&deg;</b></div>
+        <div class="metric"><label>Head pitch</label><b id="mPitch">0&deg;</b></div>
+        <div class="metric"><label>Head yaw</label><b id="mYaw">0&deg;</b></div>
+        <div class="metric"><label>Head roll</label><b id="mRoll">0&deg;</b></div>
         <div class="metric"><label>Head dir</label><b id="mDir">FORWARD</b></div>
       </div>
     </section>
@@ -76,10 +116,10 @@
       <h2>Session Stats</h2>
       <div class="grid2">
         <div class="stat"><label>Blinks</label><b id="sBlinks">0</b></div>
-        <div class="stat"><label>Yawns</label><b id="sYawns">0</b></div>
-        <div class="stat"><label>Eye closures</label><b id="sClosures">0</b></div>
+        <div class="stat"><label>Yawn alerts</label><b id="sYawns">0</b></div>
+        <div class="stat"><label>Drowsy alerts</label><b id="sClosures">0</b></div>
+        <div class="stat"><label>Phone alerts</label><b id="sPhone">0</b></div>
         <div class="stat"><label>Looking away</label><b id="sAway">0</b></div>
-        <div class="stat"><label>Phone events</label><b id="sPhone">0</b></div>
         <div class="stat"><label>Time</label><b id="sTime">0:00</b></div>
       </div>
     </section>
@@ -88,7 +128,7 @@
 
 <footer class="foot">
   <span>Research / school prototype &mdash; NOT a certified automotive safety system.</span>
-  <span>Web detection: MediaPipe Face Landmarker &middot; Risk engine API: FastAPI</span>
+  <span>MediaPipe Face Landmarker &middot; TensorFlow.js COCO-SSD &middot; alarm via Web Audio</span>
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js"></script>
